@@ -2,7 +2,7 @@ import atexit
 import time
 from threading import Thread
 import os
-if os.name == "nt"
+if os.name == "nt":
     import pythoncom
 
 from Antmicro.Renode import Emulator
