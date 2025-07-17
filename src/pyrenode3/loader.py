@@ -386,6 +386,7 @@ class RenodeLoader(metaclass=MetaSingleton):
                 fullpath.name != "System.Private.CoreLib.dll" and
                 fullpath.name != "sni.dll" and
                 fullpath.name != "hostfxr.dll" and
+                fullpath.name != "libllvm-disas.dll" and
                 "_cor3.dll" not in fullpath.name):
                 clr.AddReference(str(fullpath))
 
