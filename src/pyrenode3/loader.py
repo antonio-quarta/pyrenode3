@@ -346,7 +346,7 @@ class RenodeLoader(metaclass=MetaSingleton):
     @classmethod
     def from_net_bin(cls, path: "Union[str, pathlib.Path]", temp=None):
         """Load Renode from binary."""
-        renode_bin = pathlib.Path(path)
+        renode_bin = pathlib.Path(path).resolve()
         renode_dir = renode_bin.parent
 
         # From 18.06.2026 Renode packages are not built as a 'SingleFile' package.
