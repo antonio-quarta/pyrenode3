@@ -12,7 +12,7 @@ pip install 'pyrenode3[all] @ git+https://github.com/antmicro/pyrenode3.git'
 ```
 
 If you have Renode installed, then `pyrenode3` will interact with it.
-Otherwise, if you don't want to install Renode, you can download a Arch package from here and set `PYRENODE_PKG` to its's location.
+Otherwise, if you don't want to install Renode, you can download a Renode package and set `PYRENODE_PKG` to its location.
 
 ## Running a demo
 
