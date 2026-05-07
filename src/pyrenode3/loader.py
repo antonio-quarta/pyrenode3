@@ -86,7 +86,7 @@ def get_RID():
     elif kernel_name == "Windows":
         os = "win"
     else:
-        msg = "Operating system " + os + " not recognized"
+        msg = "Operating system " + kernel_name + " not recognized"
         raise InitializationError(msg)
     return os + '-' + arch
 
@@ -99,7 +99,7 @@ def get_library_ext():
     elif kernel_name == "Windows":
         return ".dll"
     else:
-        msg = "Operating system " + os + " not recognize"
+        msg = "Operating system " + kernel_name + " not recognize"
         raise InitializationError(msg)
 
 
@@ -189,7 +189,7 @@ class RenodeLoader(metaclass=MetaSingleton):
         return loader
 
     @staticmethod
-    def discover_bin_dir(renode_dir, runtime):
+    def discover_bin_dir(renode_dir, runtime) -> pathlib.Path:
         if env.pyrenode_build_output:
             renode_build_dir = renode_dir / env.pyrenode_build_output
 
@@ -247,7 +247,7 @@ class RenodeLoader(metaclass=MetaSingleton):
 
         additional_libs = ensure_additional_libs(renode_bin_dir)
 
-        pythonnet_load("coreclr", runtime_config=choose_runtime_config(renode_bin_dir))
+        pythonnet_load("coreclr", runtime_config=str(choose_runtime_config(renode_bin_dir)))
 
         loader = cls()
         loader.__setup(
@@ -265,7 +265,7 @@ class RenodeLoader(metaclass=MetaSingleton):
 
         additional_libs = ensure_additional_libs(renode_bin_dir)
 
-        pythonnet_load("coreclr", runtime_config=choose_runtime_config(renode_bin_dir))
+        pythonnet_load("coreclr", runtime_config=str(choose_runtime_config(renode_bin_dir)))
 
         loader = cls()
         loader.__setup(

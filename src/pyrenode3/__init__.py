@@ -61,5 +61,5 @@ if not env.pyrenode_skip_load:
 __all__ = [
     "RPath",
     "interface_to_class",
-    "wrappers",
+    "wrappers",  # type: ignore -- this is imported dynamically
 ]
