@@ -34,6 +34,7 @@ DOTNET_ASSEMBLY_PREFIXES = (
     "mscordaccore.dll",
     "mscordbi.dll",
     "sni.dll",
+    "libllvm-disas.dll",
 )
 
 
