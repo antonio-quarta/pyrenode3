@@ -35,6 +35,7 @@ DOTNET_ASSEMBLY_PREFIXES = (
     "mscordbi.dll",
     "sni.dll",
     "libllvm-disas.dll",
+    "RenodeWPF.dll",
 )
 
 
@@ -125,6 +126,14 @@ def ensure_additional_libs(renode_bin_dir):
     return []
 
 
+def choose_runtime_config(bin_dir: pathlib.Path) -> pathlib.Path:
+    runtime_config = bin_dir / "Renode.runtimeconfig.json"
+    if platform.system() != "Windows":
+        return runtime_config
+    runtime_config_wpf = bin_dir / "RenodeWPF.runtimeconfig.json"
+    if runtime_config_wpf.exists():
+        return runtime_config_wpf
+    return runtime_config
 
 class RenodeLoader(metaclass=MetaSingleton):
     """A class used for loading Renode DLLs, platforms and scripts from various sources."""
@@ -238,7 +247,7 @@ class RenodeLoader(metaclass=MetaSingleton):
 
         additional_libs = ensure_additional_libs(renode_bin_dir)
 
-        pythonnet_load("coreclr", runtime_config=renode_bin_dir / "Renode.runtimeconfig.json")
+        pythonnet_load("coreclr", runtime_config=choose_runtime_config(renode_bin_dir))
 
         loader = cls()
         loader.__setup(
@@ -256,7 +265,7 @@ class RenodeLoader(metaclass=MetaSingleton):
 
         additional_libs = ensure_additional_libs(renode_bin_dir)
 
-        pythonnet_load("coreclr", runtime_config=renode_bin_dir / "Renode.runtimeconfig.json")
+        pythonnet_load("coreclr", runtime_config=choose_runtime_config(renode_bin_dir))
 
         loader = cls()
         loader.__setup(
