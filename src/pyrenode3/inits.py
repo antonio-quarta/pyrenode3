@@ -1,7 +1,8 @@
 import atexit
+import platform
 import time
-from threading import Thread
 
+from System.Threading import ApartmentState, Thread, ThreadStart
 from Antmicro.Renode import Emulator
 from Antmicro.Renode.Analyzers import LoggingUartAnalyzer
 from Antmicro.Renode.Backends.Video import VideoBackend
@@ -54,14 +55,16 @@ class EmulatorInit(metaclass=MetaSingleton):
 
         Emulator.ShowAnalyzers = True
 
-        self.__thread = Thread(target=Emulator.ExecuteAsMainThread, daemon=True)
-        self.__thread.start()
+        self.__thread = Thread(ThreadStart(Emulator.ExecuteAsMainThread))
+        if platform.system() == "Windows":
+            self.__thread.SetApartmentState(ApartmentState.STA)
+        self.__thread.Start()
 
         Cleaner().add_multiple(
             (0, EmulationManager.Instance.Clear),
             (5, Emulator.FinishExecutionAsMainThread),
             # Wait for the main thread to finish
-            (6, lambda: self.__thread.join()),
+            (6, lambda: self.__thread.Join()),
             (10, Emulator.DisposeAll),
             (15, Emulator.Exit),
         )
