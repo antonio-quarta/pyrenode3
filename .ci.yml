@@ -11,9 +11,6 @@ variables:
     rm packages-microsoft-prod.deb
     apt-get -qqy update > /dev/null
 
-.install-mono: &install-mono |-
-    apt-get -qqy install gtk-sharp2 mono-complete > /dev/null
-
 # Due to multiple dotnet versions being used in this CI, install-dotnet cannot
 # be placed in before_get_sources because version variable will be exapnded
 # only after hash calculation which results in hash collions and therefore
@@ -33,35 +30,6 @@ variables:
   - "8.0"
   - "9.0"
   - "10.0"
-
-test-mono-pkg:
-  stage: build
-  tags: ['ace-x86_64']
-  before_get_sources:
-    - *install_dependencies
-  before_script:
-    - *install-mono
-  script:
-    - *init_python
-    # Download Renode pkg
-    - wget --progress=dot:giga https://builds.renode.io/renode-latest.mono.pkg.tar.xz
-    - export PYRENODE_RUNTIME=mono
-    - export PYRENODE_PKG=$PWD/renode-latest.mono.pkg.tar.xz
-    - *run_tests
-
-test-installed-mono-pkg:
-  stage: build
-  tags: ['ace-x86_64']
-  before_get_sources:
-    - *install_dependencies
-  before_script:
-    - *install-mono
-  script:
-    - *init_python
-    # Download and install Renode
-    - wget --progress=dot:giga https://builds.renode.io/renode-latest.mono.deb
-    - apt-get -y install ./renode-latest.mono.deb
-    - *run_tests
 
 .test-dotnet-build:
   stage: build
@@ -114,19 +82,3 @@ test-dotnet-portable:
 test-dotnet-pkg:
   extends: .test-dotnet-pkg
   parallel: *dotnet_sdk_versions
-
-test-mono-build:
-  stage: build
-  tags: ['ace-x86_64']
-  before_get_sources:
-    - *install_dependencies
-  before_script:
-    - *install-mono
-  script:
-    - *init_python
-    # Build Renode
-    - git clone https://github.com/antmicro/renode.git
-    - pushd renode && ./build.sh --mono && popd
-    - export PYRENODE_RUNTIME=mono
-    - export PYRENODE_BUILD_DIR=$(pwd)/renode
-    - *run_tests
