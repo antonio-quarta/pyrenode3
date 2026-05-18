@@ -101,6 +101,7 @@ def ensure_additional_libs(renode_bin_dir):
         netstd_dir = renode_bin_dir / bindll_dir / "lib/netstandard2.0"
         ensure_symlink(src_old, netstd_dir / lib_old, relative=True, verbose=True)
         return [netstd_dir / "Mono.Posix.NETStandard.dll"]
+    return []
 
 
 
