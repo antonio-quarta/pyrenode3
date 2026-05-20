@@ -24,6 +24,26 @@ class InitializationError(Exception):
     ...
 
 
+DOTNET_ASSEMBLY_PREFIXES = (
+    "Microsoft.",
+    "System.",
+    "clrjit.dll",
+    "coreclr.dll",
+    "hostfxr.dll",
+    "hostpolicy.dll",
+    "mscordaccore.dll",
+    "mscordbi.dll",
+    "sni.dll",
+)
+
+
+def is_framework_assembly(path):
+    name = path.name
+    # sni.dll, hostfxr.dll, and the _cor3.dll files only exist on Windows, and cause a
+    # BadImageFormatException if loaded directly
+    return any(name.startswith(p) for p in DOTNET_ASSEMBLY_PREFIXES) or name.endswith("_cor3.dll")
+
+
 def ensure_symlink(src, dst, relative=False, verbose=False):
     linktype = "symlink"
     try:
@@ -396,12 +416,8 @@ class RenodeLoader(metaclass=MetaSingleton):
             fullpath = self.binaries / dll
             # We do not normally ship CoreLib (except portable), and it gets loaded by other dlls anyway, but loading it directly raises an error:
             # System.IO.FileLoadException: Could not load file or assembly 'System.Private.CoreLib, Version=6.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e'.
-            # sni.dll, hostfxr.dll, and the _cor3.dll files only exists on Windows, and causes a BadImageFormatException if loaded directly
             if (fullpath.exists() and
-                fullpath.name != "System.Private.CoreLib.dll" and
-                fullpath.name != "sni.dll" and
-                fullpath.name != "hostfxr.dll" and
-                "_cor3.dll" not in fullpath.name):
+                not is_framework_assembly(fullpath)):
                 # XXX(pkoscik): Workaround for AssemblyName behavior change in .NET >= 9.0.
                 # In .NET 8, passing a full DLL path (with extension) to AssemblyName(string) raised
                 # FileLoadException, which Python.NET relied on. In .NET 9, the same path is parsed as
