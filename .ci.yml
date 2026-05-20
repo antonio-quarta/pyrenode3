@@ -31,6 +31,18 @@ variables:
   - "9.0"
   - "10.0"
 
+test-installed-dotnet-pkg:
+  stage: build
+  tags: ['ace-x86_64']
+  before_get_sources:
+    - *install_dependencies
+  script:
+    - *init_python
+    # Download and install Renode
+    - wget --progress=dot:giga https://builds.renode.io/renode-latest.deb
+    - apt-get -y install ./renode-latest.deb
+    - *run_tests
+
 .test-dotnet-build:
   stage: build
   tags: ['ace-x86_64']
@@ -43,13 +55,24 @@ variables:
     # Build Renode
     - git clone https://github.com/antmicro/renode.git
     - pushd renode && ./build.sh --net && popd
-    - export PYRENODE_RUNTIME=coreclr
-    - export PYRENODE_BUILD_DIR=$PWD/renode
+    - export PYRENODE_PATH=$PWD/renode
     - *run_tests
 
 test-dotnet-build:
   extends: .test-dotnet-build
   parallel: *dotnet_sdk_versions
+
+test-dotnet-single-file-portable:
+  stage: build
+  tags: ['ace-x86_64']
+  before_get_sources:
+    - *install_dependencies
+  script:
+    - *init_python
+    # Download Renode pkg
+    - wget --progress=dot:giga https://builds.renode.io/renode-1.16.1+20260520gita52e7097e.linux-portable-dotnet.tar.gz
+    - export PYRENODE_PATH=$PWD/renode-1.16.1+20260520gita52e7097e.linux-portable-dotnet.tar.gz
+    - *run_tests
 
 test-dotnet-portable:
   stage: build
@@ -60,9 +83,7 @@ test-dotnet-portable:
     - *init_python
     # Download Renode pkg
     - wget --progress=dot:giga https://builds.renode.io/renode-latest.linux-portable.tar.gz
-    - tar xvf renode-latest.linux-portable.tar.gz
-    - export PYRENODE_RUNTIME=coreclr
-    - export PYRENODE_BIN=$(realpath $PWD/renode_*-portable/renode)
+    - export PYRENODE_PATH=$PWD/renode-latest.linux-portable.tar.gz
     - *run_tests
 
 .test-dotnet-pkg:
@@ -75,8 +96,7 @@ test-dotnet-portable:
   script:
     - *init_python
     - curl -s https://builds.renode.io/renode-latest.linux.tar.gz -o renode-dotnet.tar.gz
-    - export PYRENODE_RUNTIME=coreclr
-    - export PYRENODE_PKG=$PWD/renode-dotnet.tar.gz
+    - export PYRENODE_PATH=$PWD/renode-dotnet.tar.gz
     - *run_tests
 
 test-dotnet-pkg:
