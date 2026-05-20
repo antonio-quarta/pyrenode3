@@ -1,41 +1,43 @@
 import importlib
 import logging
+import os
 import threading
 
 from pyrenode3.loader import RenodeLoader
 from pyrenode3 import env
 
 
+def get_renode_path_from_env():
+    paths = []
+
+    if env.pyrenode_path:
+        paths.append((env.PYRENODE_PATH, env.pyrenode_path))
+
+    for var in env.PYRENODE_PATH_ALIASES:
+        value = os.environ.get(var)
+        if value:
+            logging.warning(f"{var} is deprecated. Please use {env.PYRENODE_PATH} instead.")
+            paths.append((var, value))
+
+    if env.PYRENODE_RUNTIME in os.environ:
+        logging.warning(f"{env.PYRENODE_RUNTIME} is deprecated and ignored. Renode runtime is detected automatically.")
+
+    if not paths:
+        return None
+
+    distinct_paths = set(path for _, path in paths)
+    if len(distinct_paths) > 1:
+        envs = ", ".join(var for var, _ in paths)
+        raise ImportError(f"Multiple Renode paths are set via {envs}. Please set only {env.PYRENODE_PATH}.")
+
+    return paths[0][1]
+
+
 if not env.pyrenode_skip_load:
-    runtime = env.pyrenode_runtime
+    renode_path = get_renode_path_from_env()
 
-    if runtime not in ["mono", "coreclr"]:
-        raise ImportError(f"Runtime {runtime!r} not supported")
-
-    if sum(map(bool, (env.pyrenode_pkg, env.pyrenode_build_dir, env.pyrenode_bin))) > 1:
-        raise ImportError(
-            f"Multiple of {env.PYRENODE_PKG}, {env.PYRENODE_BUILD_DIR}, {env.PYRENODE_BIN} are set. Please unset all but one of them."
-        )
-
-    if env.pyrenode_pkg:
-        if runtime == "mono":
-            RenodeLoader.from_mono_arch_pkg(env.pyrenode_pkg)
-        elif runtime == "coreclr":
-            RenodeLoader.from_net_pkg(env.pyrenode_pkg)
-
-    elif env.pyrenode_build_dir:
-        if runtime == "mono":
-            logging.warning("Using mono with Renode built from sources might not work correctly.")
-            RenodeLoader.from_mono_build(env.pyrenode_build_dir)
-        elif runtime == "coreclr":
-            RenodeLoader.from_net_build(env.pyrenode_build_dir)
-
-    elif env.pyrenode_bin:
-        if runtime == "mono":
-            raise ImportError("Using mono portable binary is not supported.")
-        elif runtime == "coreclr":
-            RenodeLoader.from_net_bin(env.pyrenode_bin)
-
+    if renode_path:
+        RenodeLoader.from_path(renode_path)
     else:
         RenodeLoader.from_installed()
 
@@ -43,9 +45,7 @@ if not env.pyrenode_skip_load:
         msg = (
             f"Renode not found. Please do one of following actions:\n"
             f"   - install Renode from a package\n"
-            f"   - set {env.PYRENODE_PKG} to the location of the Renode package\n"
-            f"   - set {env.PYRENODE_BUILD_DIR} to the location of the Renode build directory\n"
-            f"   - set {env.PYRENODE_BIN} to the location of the Renode portable binary\n"
+            f"   - set {env.PYRENODE_PATH} to the location of the Renode package, build directory or portable binary\n"
         )
         raise ImportError(msg)
 
