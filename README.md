@@ -38,7 +38,7 @@ This will spawn a two-machine demo scenario and, when the Linux boots to shell, 
 - `PYRENODE_PKG`, `PYRENODE_BUILD_DIR`, and `PYRENODE_BIN` - Deprecated aliases for `PYRENODE_PATH`.
 - `PYRENODE_RUNTIME` - Deprecated and ignored. The runtime is detected automatically.
 
-Exactly one Renode path should be specified to use `pyrenode3` with a non-installed Renode.
+The Renode path should be specified to use `pyrenode3` with a non-installed Renode.
 
 If no variable is specified `pyrenode3` will look for the Renode installed in your operating system.
 
@@ -46,7 +46,8 @@ If no variable is specified `pyrenode3` will look for the Renode installed in yo
 
 |                    | Mono               | .NET               |
 | :----------------- | :----------------: | :----------------: |
-| Installed          | :white_check_mark: | :x:                |
+| Installed          | :white_check_mark: | :white_check_mark: |
 | Package            | :white_check_mark: | :white_check_mark: |
 | Built from sources | :white_check_mark: | :white_check_mark: |
 | Portable binary    | :x:                | :white_check_mark: |
+| Portable package   | :x:                | :white_check_mark: |

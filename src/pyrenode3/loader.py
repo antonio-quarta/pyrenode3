@@ -125,8 +125,6 @@ def ensure_additional_libs(renode_bin_dir):
         ensure_symlink(src_old, netstd_dir / lib_old, relative=True, verbose=True)
         return [netstd_dir / "Mono.Posix.NETStandard.dll"]
     return []
-
-
 def choose_runtime_config(bin_dir: pathlib.Path) -> pathlib.Path:
     runtime_config = bin_dir / "Renode.runtimeconfig.json"
     if platform.system() != "Windows":
@@ -172,12 +170,28 @@ class RenodeLoader(metaclass=MetaSingleton):
         return (path / "Renode.runtimeconfig.json").exists() and (path / "Renode.dll").exists()
 
     @staticmethod
+    def is_self_contained_coreclr_bin_dir(path):
+        try:
+            with open(path / "Renode.runtimeconfig.json") as config_fp:
+                config = json.load(config_fp)
+        except (OSError, json.JSONDecodeError):
+            return False
+
+        return "includedFrameworks" in config.get("runtimeOptions", {})
+
+    @staticmethod
     def is_mono_bin_dir(path):
         return (path / "Renode.exe").exists() and not (path / "Renode.runtimeconfig.json").exists()
 
     @staticmethod
-    def discover_renode_dir(path):
+    def discover_renode_dir(path, visited=None):
         path = pathlib.Path(path)
+        if visited is None:
+            visited = set()
+        real_path = path.resolve()
+        if real_path in visited:
+            raise InitializationError(f"Cyclic directory structure detected while looking for Renode directory in {path}.")
+        visited.add(real_path)
 
         if (path / "opt/renode").exists():
             return path / "opt/renode"
@@ -198,7 +212,7 @@ class RenodeLoader(metaclass=MetaSingleton):
         renode_dirs = []
         for candidate in path.glob("renode*/"):
             try:
-                renode_dirs.append(RenodeLoader.discover_renode_dir(candidate))
+                renode_dirs.append(RenodeLoader.discover_renode_dir(candidate, visited))
             except InitializationError:
                 pass
 
@@ -214,13 +228,6 @@ class RenodeLoader(metaclass=MetaSingleton):
         raise InitializationError(f"Can't determine Renode directory in {path}.")
 
     @staticmethod
-    def is_single_file_portable_dir(path):
-        names = ["renode", "Renode"]
-        if platform.system() == "Windows":
-            names.append("Renode.exe")
-        return any((path / name).is_file() for name in names)
-
-    @staticmethod
     def get_single_file_portable_bin(path):
         names = ["renode", "Renode"]
         if platform.system() == "Windows":
@@ -229,7 +236,7 @@ class RenodeLoader(metaclass=MetaSingleton):
             candidate = path / name
             if candidate.is_file():
                 return candidate
-        raise InitializationError(f"Can't determine Renode portable binary in {path}.")
+        return None
 
     @classmethod
     def from_path(cls, path: "Union[str, pathlib.Path]"):
@@ -243,6 +250,12 @@ class RenodeLoader(metaclass=MetaSingleton):
 
         if path.is_dir():
             return cls.from_dir(path)
+
+        if path.is_symlink():
+            raise InitializationError(f"{path} is a broken symlink.")
+
+        if path.exists():
+            raise InitializationError(f"{path} is not a file or directory.")
 
         raise InitializationError(f"{path} doesn't exist.")
 
@@ -260,12 +273,12 @@ class RenodeLoader(metaclass=MetaSingleton):
         if cls.is_coreclr_bin_dir(renode_dir / "bin") or cls.is_mono_bin_dir(renode_dir / "bin"):
             return cls.from_bin_dir(renode_dir / "bin", renode_dir, temp=temp)
 
-        if (cls.is_coreclr_bin_dir(renode_dir) and not (renode_dir / ".renode-root").exists()) or cls.is_mono_bin_dir(renode_dir):
+        if cls.is_coreclr_bin_dir(renode_dir) or cls.is_mono_bin_dir(renode_dir):
             root = renode_dir.parent if renode_dir.name == "bin" else renode_dir
             return cls.from_bin_dir(renode_dir, root, temp=temp)
 
-        if cls.is_single_file_portable_dir(renode_dir):
-            return cls.from_net_bin(cls.get_single_file_portable_bin(renode_dir), temp=temp)
+        if portable_bin := cls.get_single_file_portable_bin(renode_dir):
+            return cls.from_net_bin(portable_bin, temp=temp)
 
         raise InitializationError(f"Can't determine Renode runtime layout in {renode_dir}.")
 
@@ -297,7 +310,14 @@ class RenodeLoader(metaclass=MetaSingleton):
     def from_net_dir(cls, renode_dir, renode_bin_dir, temp=None):
         additional_libs = ensure_additional_libs(renode_bin_dir)
 
-        pythonnet_load("coreclr", runtime_config=str(choose_runtime_config(renode_bin_dir)))
+        if cls.is_self_contained_coreclr_bin_dir(renode_bin_dir):
+            load_params = {
+                "entry_dll": str(renode_bin_dir / "Renode.dll"),
+                "dotnet_root": str(renode_bin_dir),
+            }
+        else:
+            load_params = {"runtime_config": str(choose_runtime_config(renode_bin_dir))}
+        pythonnet_load("coreclr", **load_params)
 
         loader = cls()
         loader.__setup(
@@ -307,18 +327,6 @@ class RenodeLoader(metaclass=MetaSingleton):
             add_dlls=additional_libs,
         )
         return loader
-
-    @classmethod
-    def from_mono_arch_pkg(cls, path: "Union[str, pathlib.Path]"):
-        """Load Renode from Arch package."""
-        path = pathlib.Path(path)
-        temp = tempfile.TemporaryDirectory()
-        with tarfile.open(path, "r") as f:
-            f.extractall(temp.name)
-
-        renode_dir = pathlib.Path(temp.name) / "opt/renode"
-
-        return cls.from_mono_dir(renode_dir, renode_dir / "bin", temp=temp)
 
     @staticmethod
     def discover_bin_dir(renode_dir, runtime) -> pathlib.Path:
@@ -366,18 +374,6 @@ class RenodeLoader(metaclass=MetaSingleton):
                 f.extractall(temp.name)
 
         return cls.from_dir(temp.name, temp=temp)
-
-    @classmethod
-    def from_net_pkg(cls, path: "Union[str, pathlib.Path]"):
-        """Load Renode from dotnet package."""
-        return cls.from_pkg(path)
-
-    @classmethod
-    def from_net_build(cls, path: "Union[str, pathlib.Path]"):
-        renode_dir = pathlib.Path(path)
-        renode_bin_dir = cls.discover_bin_dir(renode_dir, "coreclr")
-
-        return cls.from_net_dir(renode_dir, renode_bin_dir)
 
     @classmethod
     def from_net_bin(cls, path: "Union[str, pathlib.Path]", temp=None):
@@ -498,9 +494,6 @@ class RenodeLoader(metaclass=MetaSingleton):
             version = check_output(["renode", "--version"])
         except FileNotFoundError:
             return None
-
-        # TODO: Determine the runtime based on version string.
-        #       (But currently version string doesn't contain runtime information.)
 
         # XXX: Assume that Renode is installed in /opt/renode. Once it is possible to install Renode
         #      to different location this must be changed!
