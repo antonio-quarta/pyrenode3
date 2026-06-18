@@ -36,7 +36,6 @@ This will spawn a two-machine demo scenario and, when the Linux boots to shell, 
     This can point to a package, an unpacked Renode directory, a Renode source directory with build output, or a portable binary.
     To modify the output directory used as a source of Renode binaries (location of `Renode.exe`), you must set the `PYRENODE_BUILD_OUTPUT` variable, with a path relative to the Renode source directory.
 - `PYRENODE_PKG`, `PYRENODE_BUILD_DIR`, and `PYRENODE_BIN` - Deprecated aliases for `PYRENODE_PATH`.
-- `PYRENODE_RUNTIME` - Deprecated and ignored. The runtime is detected automatically.
 
 The Renode path should be specified to use `pyrenode3` with a non-installed Renode.
 
@@ -44,10 +43,10 @@ If no variable is specified `pyrenode3` will look for the Renode installed in yo
 
 ### Supported configurations
 
-|                    | Mono               | .NET               |
-| :----------------- | :----------------: | :----------------: |
-| Installed          | :white_check_mark: | :white_check_mark: |
-| Package            | :white_check_mark: | :white_check_mark: |
-| Built from sources | :white_check_mark: | :white_check_mark: |
-| Portable binary    | :x:                | :white_check_mark: |
-| Portable package   | :x:                | :white_check_mark: |
+|                    | .NET               |
+| :----------------- | :----------------: |
+| Installed          | :white_check_mark: |
+| Package            | :white_check_mark: |
+| Built from sources | :white_check_mark: |
+| Portable binary    | :white_check_mark: |
+| Portable package   | :white_check_mark: |

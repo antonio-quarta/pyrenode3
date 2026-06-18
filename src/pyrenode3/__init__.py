@@ -19,9 +19,6 @@ def get_renode_path_from_env():
             logging.warning(f"{var} is deprecated. Please use {env.PYRENODE_PATH} instead.")
             paths.append((var, value))
 
-    if env.PYRENODE_RUNTIME in os.environ:
-        logging.warning(f"{env.PYRENODE_RUNTIME} is deprecated and ignored. Renode runtime is detected automatically.")
-
     if not paths:
         return None
 

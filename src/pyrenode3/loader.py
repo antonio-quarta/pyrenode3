@@ -125,6 +125,8 @@ def ensure_additional_libs(renode_bin_dir):
         ensure_symlink(src_old, netstd_dir / lib_old, relative=True, verbose=True)
         return [netstd_dir / "Mono.Posix.NETStandard.dll"]
     return []
+
+
 def choose_runtime_config(bin_dir: pathlib.Path) -> pathlib.Path:
     runtime_config = bin_dir / "Renode.runtimeconfig.json"
     if platform.system() != "Windows":
@@ -141,6 +143,8 @@ class RenodeLoader(metaclass=MetaSingleton):
         self.__initialized = False
         self.__bin_dir = None
         self.__renode_dir = None
+        self.__temp_dir = None
+        self.__additional_dlls = []
 
     @property
     def is_initialized(self):
@@ -180,10 +184,6 @@ class RenodeLoader(metaclass=MetaSingleton):
         return "includedFrameworks" in config.get("runtimeOptions", {})
 
     @staticmethod
-    def is_mono_bin_dir(path):
-        return (path / "Renode.exe").exists() and not (path / "Renode.runtimeconfig.json").exists()
-
-    @staticmethod
     def discover_renode_dir(path, visited=None):
         path = pathlib.Path(path)
         if visited is None:
@@ -199,9 +199,7 @@ class RenodeLoader(metaclass=MetaSingleton):
         if (
             (path / ".renode-root").exists()
             or RenodeLoader.is_coreclr_bin_dir(path)
-            or RenodeLoader.is_mono_bin_dir(path)
             or RenodeLoader.is_coreclr_bin_dir(path / "bin")
-            or RenodeLoader.is_mono_bin_dir(path / "bin")
             or (path / "output/bin/Release").exists()
             or (env.pyrenode_build_output and (path / env.pyrenode_build_output).exists())
         ):
@@ -267,44 +265,22 @@ class RenodeLoader(metaclass=MetaSingleton):
         if (renode_dir / "output/bin/Release").exists() or (
             env.pyrenode_build_output and (renode_dir / env.pyrenode_build_output).exists()
         ):
-            renode_bin_dir = cls.discover_bin_dir(renode_dir, None)
-            return cls.from_bin_dir(renode_bin_dir, renode_dir, temp=temp, warn_mono_build=True)
+            renode_bin_dir = cls.discover_bin_dir(renode_dir)
+            if cls.is_coreclr_bin_dir(renode_bin_dir):
+                return cls.from_net_dir(renode_dir, renode_bin_dir, temp=temp)
+            raise InitializationError(f"Can't determine Renode runtime layout in {renode_bin_dir}.")
 
-        if cls.is_coreclr_bin_dir(renode_dir / "bin") or cls.is_mono_bin_dir(renode_dir / "bin"):
-            return cls.from_bin_dir(renode_dir / "bin", renode_dir, temp=temp)
+        if cls.is_coreclr_bin_dir(renode_dir / "bin"):
+            return cls.from_net_dir(renode_dir, renode_dir / "bin", temp=temp)
 
-        if cls.is_coreclr_bin_dir(renode_dir) or cls.is_mono_bin_dir(renode_dir):
+        if cls.is_coreclr_bin_dir(renode_dir):
             root = renode_dir.parent if renode_dir.name == "bin" else renode_dir
-            return cls.from_bin_dir(renode_dir, root, temp=temp)
+            return cls.from_net_dir(root, renode_dir, temp=temp)
 
         if portable_bin := cls.get_single_file_portable_bin(renode_dir):
             return cls.from_net_bin(portable_bin, temp=temp)
 
         raise InitializationError(f"Can't determine Renode runtime layout in {renode_dir}.")
-
-    @classmethod
-    def from_bin_dir(cls, renode_bin_dir, renode_dir, temp=None, warn_mono_build=False):
-        if cls.is_coreclr_bin_dir(renode_bin_dir):
-            return cls.from_net_dir(renode_dir, renode_bin_dir, temp=temp)
-        if cls.is_mono_bin_dir(renode_bin_dir):
-            if warn_mono_build:
-                logging.warning("Using mono with Renode built from sources might not work correctly.")
-            return cls.from_mono_dir(renode_dir, renode_bin_dir, temp=temp)
-        raise InitializationError(f"Can't determine Renode runtime layout in {renode_bin_dir}.")
-
-    @classmethod
-    def from_mono_dir(cls, renode_dir, renode_bin_dir, temp=None):
-        pythonnet_load("mono")
-
-        loader = cls()
-        loader.__setup(
-            renode_bin_dir,
-            renode_dir,
-            temp=temp,
-            add_dlls=["Renode.exe"]
-        )
-
-        return loader
 
     @classmethod
     def from_net_dir(cls, renode_dir, renode_bin_dir, temp=None):
@@ -329,7 +305,7 @@ class RenodeLoader(metaclass=MetaSingleton):
         return loader
 
     @staticmethod
-    def discover_bin_dir(renode_dir, runtime) -> pathlib.Path:
+    def discover_bin_dir(renode_dir) -> pathlib.Path:
         if env.pyrenode_build_output:
             renode_build_dir = renode_dir / env.pyrenode_build_output
 
@@ -352,14 +328,6 @@ class RenodeLoader(metaclass=MetaSingleton):
 
         logging.info(f"Using {renode_build_dir} as a directory with Renode binaries.")
         return renode_build_dir
-
-    @classmethod
-    def from_mono_build(cls, path: "Union[str, pathlib.Path]"):
-        """Load Renode from Mono build."""
-        renode_dir = pathlib.Path(path)
-
-        logging.warning("Using mono with Renode built from sources might not work correctly.")
-        return cls.from_mono_dir(renode_dir, cls.discover_bin_dir(renode_dir, "mono"))
 
     @classmethod
     def from_pkg(cls, path: "Union[str, pathlib.Path]"):
@@ -498,14 +466,17 @@ class RenodeLoader(metaclass=MetaSingleton):
         # XXX: Assume that Renode is installed in /opt/renode. Once it is possible to install Renode
         #      to different location this must be changed!
         renode_dir = pathlib.Path("/opt/renode")
+        renode_bin_dir = renode_dir / "bin"
+        runtime_config = choose_runtime_config(renode_bin_dir)
+        if not runtime_config.exists():
+            return None
+
+        pythonnet_load("coreclr", runtime_config=str(runtime_config))
 
         loader = cls()
         loader.__setup(
-            renode_dir / "bin",
+            renode_bin_dir,
             renode_dir,
-            # XXX: Assume Mono runtime. Currently only Mono version can be installed as package.
-            runtime="mono",
-            add_dlls=["Renode.exe"]
         )
 
         return loader
@@ -521,12 +492,10 @@ class RenodeLoader(metaclass=MetaSingleton):
 
     def __load_asm(self):
         # Import clr here, because it must be done after the proper runtime is selected.
-        # If the runtime isn't loaded, the clr module loads the default runtime (mono) automatically.
-        # It is an issue when we use non-default runtime, e.g. coreclr.
         import clr
 
         dlls = [*self.binaries.glob("*.dll")]
-        dlls.extend(self.__extra.get("add_dlls", []))
+        dlls.extend(self.__additional_dlls)
 
         for dll in dlls:
             fullpath = self.binaries / dll
@@ -541,10 +510,12 @@ class RenodeLoader(metaclass=MetaSingleton):
                 # are valid in both runtimes.
                 clr.AddReference(str(fullpath.with_suffix("")))
 
-    def __setup(self,
+    def __setup(
+        self,
         bin_dir: "Union[str, pathlib.Path]",
         renode_dir: "Union[str, pathlib.Path]",
-        **kwargs,
+        temp=None,
+        add_dlls=None,
     ):
         if self.__initialized:
             msg = "RenodeLoader is already initialized"
@@ -552,7 +523,9 @@ class RenodeLoader(metaclass=MetaSingleton):
 
         self.__bin_dir = pathlib.Path(bin_dir).absolute()
         self.__renode_dir = pathlib.Path(renode_dir).absolute()
-        self.__extra = kwargs
+        # Keep extracted package directories alive for as long as the loader exists.
+        self.__temp_dir = temp
+        self.__additional_dlls = add_dlls or []
 
         self.__load_asm()
 
