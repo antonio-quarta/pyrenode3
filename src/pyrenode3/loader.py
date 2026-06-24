@@ -281,13 +281,22 @@ class RenodeLoader(metaclass=MetaSingleton):
         renode_bin = pathlib.Path(path)
         renode_dir = renode_bin.parent
 
-        # As a side effect, executing the binary causes the embedded dlls to be extracted to:
-        #     ~/.net/<executable name>/<executable hash>/
-        # The location gets printed to stderr (or selected file) if suitable environment variables are set.
-        out = check_output([renode_bin, "--version"], stderr=STDOUT, env=os.environ | {"COREHOST_TRACE": "1", "COREHOST_TRACEFILE": ""}, text=True)
+        # From 18.06.2026 Renode packages are not built as a 'SingleFile' package.
+        # This means that .dll files are now located inside the package directory
+        # instead of being packed into 'renode' executable.
+        # To determine which package we are working with we can check if a common .dll is present.
 
-        binaries = re.search(r"will be extracted to \[(.*)\] directory", out).group(1)
-        binaries = pathlib.Path(binaries)
+        binaries = None
+        if pathlib.Path(renode_dir / "System.dll").is_file():
+            binaries = renode_dir
+        else:
+            # As a side effect, executing the binary causes the embedded dlls to be extracted to:
+            #     ~/.net/<executable name>/<executable hash>/
+            # The location gets printed to stderr (or selected file) if suitable environment variables are set.
+            out = check_output([renode_bin, "--version"], stderr=STDOUT, env=os.environ | {"COREHOST_TRACE": "1", "COREHOST_TRACEFILE": ""}, text=True)
+
+            binaries = re.search(r"will be extracted to \[(.*)\] directory", out).group(1)
+            binaries = pathlib.Path(binaries)
 
         # There should be *some* way to specify a dll PATH, but it does not 'just work' e.g. in runtimeconfig.json.
         # As a workaround, we create a directory hierarchy (can be anywhere, but we use ~/.net/...) like
