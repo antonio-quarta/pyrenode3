@@ -28,15 +28,19 @@ class InitializationError(Exception):
 DOTNET_ASSEMBLY_PREFIXES = (
     "Microsoft.",
     "System.",
-    "clrjit.dll",
     "coreclr.dll",
     "hostfxr.dll",
     "hostpolicy.dll",
-    "mscordaccore.dll",
-    "mscordbi.dll",
-    "sni.dll",
     "libllvm-disas.dll",
+    "msquic.dll",
     "RenodeWPF.dll",
+    "sni.dll",
+    # clr* is 'Common Language Runtime'
+    "clr",
+    # mscor* is 'Microsoft Common Object Runtime Library'
+    "mscor",
+    # icu* is 'International Components for Unicode'
+    "icu",
 )
 
 
