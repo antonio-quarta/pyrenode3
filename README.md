@@ -23,7 +23,8 @@ wget https://builds.renode.io/renode-latest.pkg.tar.xz
 wget https://raw.githubusercontent.com/antmicro/pyrenode3/main/examples/unleashed-fomu.py
 export PYRENODE_PATH=`pwd`/renode-latest.pkg.tar.xz
 
-bpython -i unleashed-fomu.py
+ptpython -i unleashed-fomu.py
+# ptpython or bpython is recommended over standard repl for better experience.
 ```
 
 This will spawn a two-machine demo scenario and, when the Linux boots to shell, you will be able to interact with the simulation via bpython interface.
