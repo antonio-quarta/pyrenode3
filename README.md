@@ -1,6 +1,6 @@
 # pyrenode3
 
-Copyright (c) 2023-2025 Antmicro
+Copyright (c) 2023-2026 Antmicro
 
 A Python library for interacting with Renode programmatically.
 
