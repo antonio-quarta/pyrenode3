@@ -30,6 +30,7 @@ dependencies = [
 
 [project.optional-dependencies]
 interact = ["bpython>=0.24"]
+interact-win = ["ptpython>=3.0"]
 all = ["pyrenode3[interact]"]
 
 [project.scripts]

@@ -1,7 +1,15 @@
-try:
+import os
+import importlib.util
+
+if os.name != 'nt' and importlib.util.find_spec('bpython'):
     import bpython
-except ModuleNotFoundError as e:
-    raise ImportError from e
+    run_repl_with = lambda local: bpython.embed(local)
+elif importlib.util.find_spec('ptpython'):
+    import ptpython
+    run_repl_with = lambda local: ptpython.repl.embed(local)
+else:
+    import code
+    run_repl_with = lambda local: code.interact(local=local)
 
 import pyrenode3
 
@@ -17,4 +25,4 @@ def main():
     for wrapper_name in pyrenode3.wrappers.__all__:
         local[wrapper_name] = getattr(pyrenode3.wrappers, wrapper_name)
 
-    bpython.embed(local)
+    run_repl_with(local)

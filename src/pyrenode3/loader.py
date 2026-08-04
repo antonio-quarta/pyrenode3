@@ -5,9 +5,11 @@ import os
 import pathlib
 import re
 import sys
+import shutil
 import tarfile
 import tempfile
 import platform
+import zipfile
 from contextlib import contextmanager
 from typing import Union
 from subprocess import check_output, STDOUT
@@ -23,15 +25,54 @@ class InitializationError(Exception):
     ...
 
 
+DOTNET_ASSEMBLY_PREFIXES = (
+    "Microsoft.",
+    "System.",
+    "coreclr.dll",
+    "hostfxr.dll",
+    "hostpolicy.dll",
+    "libllvm-disas.dll",
+    "msquic.dll",
+    "RenodeWPF.dll",
+    "sni.dll",
+    # clr* is 'Common Language Runtime'
+    "clr",
+    # mscor* is 'Microsoft Common Object Runtime Library'
+    "mscor",
+    # icu* is 'International Components for Unicode'
+    "icu",
+)
+
+
+def is_framework_assembly(path):
+    name = path.name
+    # sni.dll, hostfxr.dll, and the _cor3.dll files only exist on Windows, and cause a
+    # BadImageFormatException if loaded directly
+    return any(name.startswith(p) for p in DOTNET_ASSEMBLY_PREFIXES) or name.endswith("_cor3.dll")
+
+
 def ensure_symlink(src, dst, relative=False, verbose=False):
-    if relative:
-        src = os.path.relpath(src, dst.parent)
+    linktype = "symlink"
     try:
-        dst.symlink_to(src)
+        target = src.absolute() if not relative else src
+        # Remove the existing destination if it's a symlink to somewhere wrong
+        if dst.resolve().absolute() not in (dst.absolute(), target):
+            dst.unlink()
+
+        dst.symlink_to(target)
     except FileExistsError:
         return
+    except OSError:
+        try:
+            dst.hardlink_to(src)
+            linktype = "hardlink"
+        except FileExistsError:
+            return
+        except OSError:
+            shutil.copy(src, dst)
+            linktype = "copy"
     if verbose:
-        logging.warning(f"{dst.name} is not in the expected location. Created symlink.")
+        logging.warning(f"{dst.name} is not in the expected location. Created {linktype}.")
         logging.warning(f"{src} -> {dst}")
 
 # Returns the runtime identifier (RID) of the current platform,
@@ -50,7 +91,7 @@ def get_RID():
     elif kernel_name == "Windows":
         os = "win"
     else:
-        msg = "Operating system " + os + " not recognized"
+        msg = "Operating system " + kernel_name + " not recognized"
         raise InitializationError(msg)
     return os + '-' + arch
 
@@ -63,7 +104,7 @@ def get_library_ext():
     elif kernel_name == "Windows":
         return ".dll"
     else:
-        msg = "Operating system " + os + " not recognize"
+        msg = "Operating system " + kernel_name + " not recognize"
         raise InitializationError(msg)
 
 
@@ -72,7 +113,7 @@ def ensure_additional_libs(renode_bin_dir):
     if platform.system() == "Windows":
         return []
     # HACK: move libMonoPosixHelper to path where it is searched for
-    bindll_dir = renode_bin_dir / "runtimes" / get_RID()
+    bindll_dir = pathlib.Path("runtimes") / get_RID()
     # Updating to Mono.Posix changed the name of this file
     # so we check for the new one, and fall back on the old one if it is not found
     lib_new = "libMono.Unix" + get_library_ext()
@@ -80,15 +121,24 @@ def ensure_additional_libs(renode_bin_dir):
     src_new = bindll_dir / "native" / lib_new
     src_old = bindll_dir / "native" / lib_old
 
-    if src_new.exists():
-        ensure_symlink(src_new, renode_bin_dir / lib_new, verbose=True)
+    if (renode_bin_dir / src_new).exists():
+        ensure_symlink(src_new, renode_bin_dir / lib_new, relative=True, verbose=True)
         return [renode_bin_dir / "Mono.Posix.dll"]
-    else:
-        netstd_dir = bindll_dir / "lib/netstandard2.0"
+    elif (renode_bin_dir / src_old).exists():
+        netstd_dir = renode_bin_dir / bindll_dir / "lib/netstandard2.0"
         ensure_symlink(src_old, netstd_dir / lib_old, relative=True, verbose=True)
         return [netstd_dir / "Mono.Posix.NETStandard.dll"]
+    return []
 
 
+def choose_runtime_config(bin_dir: pathlib.Path) -> pathlib.Path:
+    runtime_config = bin_dir / "Renode.runtimeconfig.json"
+    if platform.system() != "Windows":
+        return runtime_config
+    runtime_config_wpf = bin_dir / "RenodeWPF.runtimeconfig.json"
+    if runtime_config_wpf.exists():
+        return runtime_config_wpf
+    return runtime_config
 
 class RenodeLoader(metaclass=MetaSingleton):
     """A class used for loading Renode DLLs, platforms and scripts from various sources."""
@@ -97,6 +147,8 @@ class RenodeLoader(metaclass=MetaSingleton):
         self.__initialized = False
         self.__bin_dir = None
         self.__renode_dir = None
+        self.__temp_dir = None
+        self.__additional_dlls = []
 
     @property
     def is_initialized(self):
@@ -121,30 +173,143 @@ class RenodeLoader(metaclass=MetaSingleton):
 
         return self.__bin_dir
 
-    @classmethod
-    def from_mono_arch_pkg(cls, path: "Union[str, pathlib.Path]"):
-        """Load Renode from Arch package."""
+    @staticmethod
+    def is_coreclr_bin_dir(path):
+        return (path / "Renode.runtimeconfig.json").exists() and (path / "Renode.dll").exists()
+
+    @staticmethod
+    def is_self_contained_coreclr_bin_dir(path):
+        try:
+            with open(path / "Renode.runtimeconfig.json") as config_fp:
+                config = json.load(config_fp)
+        except (OSError, json.JSONDecodeError):
+            return False
+
+        return "includedFrameworks" in config.get("runtimeOptions", {})
+
+    @staticmethod
+    def discover_renode_dir(path, visited=None):
         path = pathlib.Path(path)
-        temp = tempfile.TemporaryDirectory()
-        with tarfile.open(path, "r") as f:
-            f.extractall(temp.name)
+        if visited is None:
+            visited = set()
+        real_path = path.resolve()
+        if real_path in visited:
+            raise InitializationError(f"Cyclic directory structure detected while looking for Renode directory in {path}.")
+        visited.add(real_path)
 
-        renode_dir = pathlib.Path(temp.name) / "opt/renode"
+        if (path / "opt/renode").exists():
+            return path / "opt/renode"
 
-        pythonnet_load("mono")
+        if (
+            (path / ".renode-root").exists()
+            or RenodeLoader.is_coreclr_bin_dir(path)
+            or RenodeLoader.is_coreclr_bin_dir(path / "bin")
+            or (path / "output/bin/Release").exists()
+            or (env.pyrenode_build_output and (path / env.pyrenode_build_output).exists())
+        ):
+            return path
+
+        # Packages extract into a single top-level renode* directory. Also support
+        # pointing PYRENODE_PATH at the parent of such an unpacked directory
+        renode_dirs = []
+        for candidate in path.glob("renode*/"):
+            try:
+                renode_dirs.append(RenodeLoader.discover_renode_dir(candidate, visited))
+            except InitializationError:
+                pass
+
+        renode_dirs = list(dict.fromkeys(renode_dirs))
+
+        if len(renode_dirs) == 1:
+            return renode_dirs[0]
+        if len(renode_dirs) > 1:
+            raise InitializationError(
+                f"In {path} package should be exactly one Renode directory. Found {len(renode_dirs)}."
+            )
+
+        raise InitializationError(f"Can't determine Renode directory in {path}.")
+
+    @staticmethod
+    def get_single_file_portable_bin(path):
+        names = ["renode", "Renode"]
+        if platform.system() == "Windows":
+            names.append("Renode.exe")
+        for name in names:
+            candidate = path / name
+            if candidate.is_file():
+                return candidate
+        return None
+
+    @classmethod
+    def from_path(cls, path: "Union[str, pathlib.Path]"):
+        """Load Renode from any supported package, build directory or portable binary."""
+        path = pathlib.Path(path)
+
+        if path.is_file():
+            if tarfile.is_tarfile(path) or zipfile.is_zipfile(path):
+                return cls.from_pkg(path)
+            return cls.from_net_bin(path)
+
+        if path.is_dir():
+            return cls.from_dir(path)
+
+        if path.is_symlink():
+            raise InitializationError(f"{path} is a broken symlink.")
+
+        if path.exists():
+            raise InitializationError(f"{path} is not a file or directory.")
+
+        raise InitializationError(f"{path} doesn't exist.")
+
+    @classmethod
+    def from_dir(cls, path: "Union[str, pathlib.Path]", temp=None):
+        """Load Renode from a directory, detecting the runtime from its layout."""
+        renode_dir = cls.discover_renode_dir(path)
+
+        if (renode_dir / "output/bin/Release").exists() or (
+            env.pyrenode_build_output and (renode_dir / env.pyrenode_build_output).exists()
+        ):
+            renode_bin_dir = cls.discover_bin_dir(renode_dir)
+            if cls.is_coreclr_bin_dir(renode_bin_dir):
+                return cls.from_net_dir(renode_dir, renode_bin_dir, temp=temp)
+            raise InitializationError(f"Can't determine Renode runtime layout in {renode_bin_dir}.")
+
+        if cls.is_coreclr_bin_dir(renode_dir / "bin"):
+            return cls.from_net_dir(renode_dir, renode_dir / "bin", temp=temp)
+
+        if cls.is_coreclr_bin_dir(renode_dir):
+            root = renode_dir.parent if renode_dir.name == "bin" else renode_dir
+            return cls.from_net_dir(root, renode_dir, temp=temp)
+
+        if portable_bin := cls.get_single_file_portable_bin(renode_dir):
+            return cls.from_net_bin(portable_bin, temp=temp)
+
+        raise InitializationError(f"Can't determine Renode runtime layout in {renode_dir}.")
+
+    @classmethod
+    def from_net_dir(cls, renode_dir, renode_bin_dir, temp=None):
+        additional_libs = ensure_additional_libs(renode_bin_dir)
+
+        if cls.is_self_contained_coreclr_bin_dir(renode_bin_dir):
+            load_params = {
+                "entry_dll": str(renode_bin_dir / "Renode.dll"),
+                "dotnet_root": str(renode_bin_dir),
+            }
+        else:
+            load_params = {"runtime_config": str(choose_runtime_config(renode_bin_dir))}
+        pythonnet_load("coreclr", **load_params)
 
         loader = cls()
         loader.__setup(
-            renode_dir / "bin",
+            renode_bin_dir,
             renode_dir,
             temp=temp,
-            add_dlls=["Renode.exe"]
+            add_dlls=additional_libs,
         )
-
         return loader
 
     @staticmethod
-    def discover_bin_dir(renode_dir, runtime):
+    def discover_bin_dir(renode_dir) -> pathlib.Path:
         if env.pyrenode_build_output:
             renode_build_dir = renode_dir / env.pyrenode_build_output
 
@@ -169,80 +334,41 @@ class RenodeLoader(metaclass=MetaSingleton):
         return renode_build_dir
 
     @classmethod
-    def from_mono_build(cls, path: "Union[str, pathlib.Path]"):
-        """Load Renode from Mono build."""
-        renode_dir = pathlib.Path(path)
-
-        pythonnet_load("mono")
-
-        loader = cls()
-        loader.__setup(
-            cls.discover_bin_dir(renode_dir, "mono"),
-            renode_dir,
-            add_dlls=["Renode.exe"]
-        )
-
-        return loader
-
-    @classmethod
-    def from_net_pkg(cls, path: "Union[str, pathlib.Path]"):
-        """Load Renode from dotnet package."""
+    def from_pkg(cls, path: "Union[str, pathlib.Path]"):
+        """Load Renode from a package."""
         path = pathlib.Path(path)
         temp = tempfile.TemporaryDirectory()
-        with tarfile.open(path, "r") as f:
-            f.extractall(temp.name)
+        if zipfile.is_zipfile(path):
+            with zipfile.ZipFile(path, "r") as f:
+                f.extractall(temp.name)
+        else:
+            with tarfile.open(path, "r") as f:
+                f.extractall(temp.name)
 
-        renode_dirs = list(pathlib.Path(temp.name).glob("renode*"))
-        if len(renode_dirs) > 1:
-            logging.error(f"In {path} package should be exactly one directory. Found {len(renode_dirs)}.")
-            sys.exit(1)
-
-        renode_dir = renode_dirs[0]
-        renode_bin_dir = renode_dir / "bin"
-
-        additional_libs = ensure_additional_libs(renode_bin_dir)
-
-        pythonnet_load("coreclr", runtime_config=renode_bin_dir / "Renode.runtimeconfig.json")
-
-        loader = cls()
-        loader.__setup(
-            renode_bin_dir,
-            renode_dir,
-            temp=temp,
-            add_dlls=additional_libs,
-        )
-        return loader
+        return cls.from_dir(temp.name, temp=temp)
 
     @classmethod
-    def from_net_build(cls, path: "Union[str, pathlib.Path]"):
-        renode_dir = pathlib.Path(path)
-        renode_bin_dir = cls.discover_bin_dir(renode_dir, "coreclr")
-
-        additional_libs = ensure_additional_libs(renode_bin_dir)
-
-        pythonnet_load("coreclr", runtime_config=renode_bin_dir / "Renode.runtimeconfig.json")
-
-        loader = cls()
-        loader.__setup(
-            renode_bin_dir,
-            renode_dir,
-            add_dlls=additional_libs,
-        )
-        return loader
-
-    @classmethod
-    def from_net_bin(cls, path: "Union[str, pathlib.Path]"):
+    def from_net_bin(cls, path: "Union[str, pathlib.Path]", temp=None):
         """Load Renode from binary."""
-        renode_bin = pathlib.Path(path)
+        renode_bin = pathlib.Path(path).resolve()
         renode_dir = renode_bin.parent
 
-        # As a side effect, executing the binary causes the embedded dlls to be extracted to:
-        #     ~/.net/<executable name>/<executable hash>/
-        # The location gets printed to stderr (or selected file) if suitable environment variables are set.
-        out = check_output([renode_bin, "--version"], stderr=STDOUT, env=os.environ | {"COREHOST_TRACE": "1", "COREHOST_TRACEFILE": ""}, text=True)
+        # From 18.06.2026 Renode packages are not built as a 'SingleFile' package.
+        # This means that .dll files are now located inside the package directory
+        # instead of being packed into 'renode' executable.
+        # To determine which package we are working with we can check if a common .dll is present.
 
-        binaries = re.search(r"will be extracted to \[(.*)\] directory", out).group(1)
-        binaries = pathlib.Path(binaries)
+        binaries = None
+        if pathlib.Path(renode_dir / "System.dll").is_file():
+            binaries = renode_dir
+        else:
+            # As a side effect, executing the binary causes the embedded dlls to be extracted to:
+            #     ~/.net/<executable name>/<executable hash>/
+            # The location gets printed to stderr (or selected file) if suitable environment variables are set.
+            out = check_output([renode_bin, "--version"], stderr=STDOUT, env=os.environ | {"COREHOST_TRACE": "1", "COREHOST_TRACEFILE": ""}, text=True)
+
+            binaries = re.search(r"will be extracted to \[(.*)\] directory", out).group(1)
+            binaries = pathlib.Path(binaries)
 
         # There should be *some* way to specify a dll PATH, but it does not 'just work' e.g. in runtimeconfig.json.
         # As a workaround, we create a directory hierarchy (can be anywhere, but we use ~/.net/...) like
@@ -288,12 +414,18 @@ class RenodeLoader(metaclass=MetaSingleton):
         #  }}}}}
         SYSTEM_RUNTIME = "runtimepack.Microsoft.NETCore.App.Runtime." + get_RID()
         LIB_EXT = get_library_ext()
+        native_libs_to_load = list(renode_dir.glob("*" + LIB_EXT))
+        deps_file = binaries / "Renode.deps.json"
 
-        deps = json.load(open(binaries / "Renode.deps.json", "rb"))
+        with open(deps_file, "rb") as deps_fp:
+            deps = json.load(deps_fp)
+
         target = deps["targets"][deps["runtimeTarget"]["name"]]
         for lib, dlls in target.items():
             name, version = lib.split("/")
             if name == SYSTEM_RUNTIME:
+                # Patch in the libraries into deps.json so that they can be easily found, otherwise libhostfxr.so doesn't find them in newer versions of the runtime
+                dlls["native"] = {lib.name: {} for lib in native_libs_to_load}
                 tfm_full = version
                 system_dlls = list(dlls["runtime"])
                 break
@@ -303,9 +435,12 @@ class RenodeLoader(metaclass=MetaSingleton):
             logging.warning(f"Could not find {SYSTEM_RUNTIME} in deps.json. "
                             f"Assuming framework version {tfm_full}.")
 
+        with open(deps_file, "w") as deps_fp:
+            json.dump(deps, deps_fp)
+
         runtime = binaries / "shared/Microsoft.NETCore.App" / tfm_full
         runtime.mkdir(parents=True, exist_ok=True)
-        for lib in renode_dir.glob("*" + LIB_EXT):
+        for lib in native_libs_to_load:
             ensure_symlink(lib, runtime / lib.name)
 
         for lib in system_dlls:
@@ -321,7 +456,7 @@ class RenodeLoader(metaclass=MetaSingleton):
         loader.__renode_dir = renode_dir
         with loader.in_root():
             pythonnet_load("coreclr", dotnet_root=binaries, runtime_spec=DotnetCoreRuntimeSpec("Microsoft.NETCore.App", tfm_full, runtime))
-        loader.__setup(binaries, renode_dir)
+        loader.__setup(binaries, renode_dir, temp=temp)
 
         return loader
 
@@ -332,20 +467,20 @@ class RenodeLoader(metaclass=MetaSingleton):
         except FileNotFoundError:
             return None
 
-        # TODO: Determine the runtime based on version string.
-        #       (But currently version string doesn't contain runtime information.)
-
         # XXX: Assume that Renode is installed in /opt/renode. Once it is possible to install Renode
         #      to different location this must be changed!
         renode_dir = pathlib.Path("/opt/renode")
+        renode_bin_dir = renode_dir / "bin"
+        runtime_config = choose_runtime_config(renode_bin_dir)
+        if not runtime_config.exists():
+            return None
+
+        pythonnet_load("coreclr", runtime_config=str(runtime_config))
 
         loader = cls()
         loader.__setup(
-            renode_dir / "bin",
+            renode_bin_dir,
             renode_dir,
-            # XXX: Assume Mono runtime. Currently only Mono version can be installed as package.
-            runtime="mono",
-            add_dlls=["Renode.exe"]
         )
 
         return loader
@@ -361,29 +496,30 @@ class RenodeLoader(metaclass=MetaSingleton):
 
     def __load_asm(self):
         # Import clr here, because it must be done after the proper runtime is selected.
-        # If the runtime isn't loaded, the clr module loads the default runtime (mono) automatically.
-        # It is an issue when we use non-default runtime, e.g. coreclr.
         import clr
 
         dlls = [*self.binaries.glob("*.dll")]
-        dlls.extend(self.__extra.get("add_dlls", []))
+        dlls.extend(self.__additional_dlls)
 
         for dll in dlls:
             fullpath = self.binaries / dll
             # We do not normally ship CoreLib (except portable), and it gets loaded by other dlls anyway, but loading it directly raises an error:
             # System.IO.FileLoadException: Could not load file or assembly 'System.Private.CoreLib, Version=6.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e'.
-            # sni.dll, hostfxr.dll, and the _cor3.dll files only exists on Windows, and causes a BadImageFormatException if loaded directly
             if (fullpath.exists() and
-                fullpath.name != "System.Private.CoreLib.dll" and
-                fullpath.name != "sni.dll" and
-                fullpath.name != "hostfxr.dll" and
-                "_cor3.dll" not in fullpath.name):
-                clr.AddReference(str(fullpath))
+                not is_framework_assembly(fullpath)):
+                # XXX(pkoscik): Workaround for AssemblyName behavior change in .NET >= 9.0.
+                # In .NET 8, passing a full DLL path (with extension) to AssemblyName(string) raised
+                # FileLoadException, which Python.NET relied on. In .NET 9, the same path is parsed as
+                # a valid assembly name, breaking Python.NET's loading heuristic. Paths without extension
+                # are valid in both runtimes.
+                clr.AddReference(str(fullpath.with_suffix("")))
 
-    def __setup(self,
+    def __setup(
+        self,
         bin_dir: "Union[str, pathlib.Path]",
         renode_dir: "Union[str, pathlib.Path]",
-        **kwargs,
+        temp=None,
+        add_dlls=None,
     ):
         if self.__initialized:
             msg = "RenodeLoader is already initialized"
@@ -391,7 +527,9 @@ class RenodeLoader(metaclass=MetaSingleton):
 
         self.__bin_dir = pathlib.Path(bin_dir).absolute()
         self.__renode_dir = pathlib.Path(renode_dir).absolute()
-        self.__extra = kwargs
+        # Keep extracted package directories alive for as long as the loader exists.
+        self.__temp_dir = temp
+        self.__additional_dlls = add_dlls or []
 
         self.__load_asm()
 

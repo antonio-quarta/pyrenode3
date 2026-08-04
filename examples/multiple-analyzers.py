@@ -11,15 +11,14 @@ from pyrenode3.inits import XwtInit
 
 from Antmicro.Renode.Peripherals.UART import IUART
 
-dts_url = "https://new-zephyr-dashboard.renode.io/zephyr/7f83db489e60f1ab93da01bccd744e4972c843e9/arduino_nicla_sense_me/hello_world/hello_world.dts"
-elf_url = "https://new-zephyr-dashboard.renode.io/zephyr/7f83db489e60f1ab93da01bccd744e4972c843e9/arduino_nicla_sense_me/hello_world/hello_world.elf"
+elf_url = "https://dl.antmicro.com/projects/renode/zephyr-arduino_nicla_sense_me-hello_world.elf-s_661380-a6d7b8c3661b01c93cf0fd276e0e18e75d3a89d4"
 
 session = requests.Session()
 
 def download(url, dest):
     rsp = session.get(url)
     if rsp.status_code != requests.codes.OK:
-        exit(1)
+        raise Exception(f"Failed to download {url}: {rsp.status_code}", file=stderr)
 
     with open(dest, 'wb') as f:
         f.write(rsp.content)
@@ -27,7 +26,7 @@ def download(url, dest):
 def create_repl(dts, dest):
     repl = dts2repl.generate(dts)
     if repl == "":
-        exit(1)
+        raise Exception(f"Failed to generate repl for {dts}")
 
     with open(dest, "w") as f:
         f.write(repl)
@@ -56,9 +55,8 @@ def setup_machine(machine_name):
         for uart, uart_name in all_uarts:
             uart.CharReceived += create_callback(uart, f"{machine_name}_{uart_name}")
 
-download(dts_url, "example.dts")
 download(elf_url, "example.elf")
-create_repl("example.dts", "example.repl")
+create_repl(Path(__file__).parent / "multiple-analyzers.dts", "example.repl")
 
 emu = Emulation()
 
